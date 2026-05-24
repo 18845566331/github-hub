@@ -1,0 +1,39 @@
+# User-specific configuration and exported project data
+config.json
+config.json.bak
+github_hub_config.json
+projects.json
+
+# Downloaded projects and dependency caches
+projects/
+shared_packages/
+pip_cache/
+.runtime_packages/
+.venv/
+venv/
+
+# Runtime output and local test records
+logs/
+*.log
+TEST_REPORT_*.md
+
+# Python and tooling output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.spec
+
+# Local maintenance/prototype helpers
+check_splash.py
+fix_enc_scan.py
+fix_splash.py
+show_splash2.py
+
+# IDE/assistant-local state
+.claude/
+.vscode/
+.idea/

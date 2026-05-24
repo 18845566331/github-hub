@@ -1,0 +1,16 @@
+{
+  "projects_dir": "./projects",
+  "shared_dir": "./shared_packages",
+  "pip_cache_dir": "./pip_cache",
+  "dep_mode": 1,
+  "python_exe": "",
+  "github_token": "",
+  "pip_mirror": "官方 PyPI (默认)",
+  "github_mirror": "直连 GitHub (默认)",
+  "npm_mirror": "官方 npm (默认)",
+  "githug_repo": "",
+  "githug_branch": "main",
+  "version": "1.0.0",
+  "projects": []
+}
+
