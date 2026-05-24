@@ -289,7 +289,8 @@ def install_to_shared_dir(project_dir: str, shared_dir: str,
                            python_exe: str = None,
                            callback: Callable = None,
                            pip_mirror_args: list = None,
-                           npm_registry_args: list = None) -> bool:
+                           npm_registry_args: list = None,
+                           recipe: dict = None) -> bool:
     if python_exe is None:
         python_exe = get_python_executable()
     if pip_mirror_args is None:
@@ -298,9 +299,11 @@ def install_to_shared_dir(project_dir: str, shared_dir: str,
         npm_registry_args = []
 
     proj_info = detect_project_type(project_dir)
+    install_recipe = (recipe or {}).get("install", {})
     p = Path(project_dir)
     has_python_deps = (
-        proj_info["has_requirements"]
+        install_recipe.get("runtime") == "python"
+        or proj_info["has_requirements"]
         or (p / "requirements-dev.txt").exists()
         or proj_info["has_pyproject"]
         or proj_info.get("has_setup_py")
@@ -311,11 +314,15 @@ def install_to_shared_dir(project_dir: str, shared_dir: str,
     success = True
     auto_fix_ctx = {"python_exe": python_exe, "project_dir": project_dir}
 
-    requirement_files = [
+    requirement_files = install_recipe.get("requirements") or [
         name for name in ("requirements.txt", "requirements-dev.txt")
         if (p / name).exists()
     ]
     for requirement_name in requirement_files:
+        if not (p / requirement_name).is_file():
+            if callback:
+                callback(f"[ERROR] Verified recipe requirement missing: {requirement_name}")
+            return False
         req_file = str(p / requirement_name)
         if callback:
             callback(f"[INFO] 从 {requirement_name} 安装到共享目录: {shared_dir}")
@@ -325,9 +332,12 @@ def install_to_shared_dir(project_dir: str, shared_dir: str,
         success &= _run_pip_with_progress(cmd, callback=callback, auto_fix_ctx=auto_fix_ctx)
 
     has_installable_project = (
-        proj_info.get("has_setup_py")
-        or (p / "setup.cfg").exists()
-        or (proj_info["has_pyproject"] and _should_install_python_project(project_dir, callback))
+        bool(install_recipe.get("install_project"))
+        if install_recipe else (
+            proj_info.get("has_setup_py")
+            or (p / "setup.cfg").exists()
+            or (proj_info["has_pyproject"] and _should_install_python_project(project_dir, callback))
+        )
     )
     if has_installable_project:
         if callback:
@@ -387,7 +397,8 @@ def install_with_venv(project_dir: str, venv_dir: str,
                       python_exe: str = None,
                       callback: Callable = None,
                       pip_mirror_args: list = None,
-                      npm_registry_args: list = None) -> bool:
+                      npm_registry_args: list = None,
+                      recipe: dict = None) -> bool:
     if python_exe is None:
         python_exe = get_python_executable()
     if pip_mirror_args is None:
@@ -396,9 +407,11 @@ def install_with_venv(project_dir: str, venv_dir: str,
         npm_registry_args = []
 
     proj_info = detect_project_type(project_dir)
+    install_recipe = (recipe or {}).get("install", {})
     p = Path(project_dir)
     has_python_deps = (
-        proj_info["has_requirements"]
+        install_recipe.get("runtime") == "python"
+        or proj_info["has_requirements"]
         or (p / "requirements-dev.txt").exists()
         or proj_info["has_pyproject"]
         or proj_info.get("has_setup_py")
@@ -458,11 +471,15 @@ def install_with_venv(project_dir: str, venv_dir: str,
                        capture_output=True,
                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
-    requirement_files = [
+    requirement_files = install_recipe.get("requirements") or [
         name for name in ("requirements.txt", "requirements-dev.txt")
         if (p / name).exists()
     ]
     for requirement_name in requirement_files:
+        if not (p / requirement_name).is_file():
+            if callback:
+                callback(f"[ERROR] Verified recipe requirement missing: {requirement_name}")
+            return False
         req_file = str(p / requirement_name)
         if callback:
             callback(f"[INFO] 正在{'使用 uv ' if has_uv else ''}安装 {requirement_name} ...")
@@ -470,9 +487,12 @@ def install_with_venv(project_dir: str, venv_dir: str,
         success &= _run_pip_with_progress(cmd, callback=callback, auto_fix_ctx=auto_fix_ctx)
 
     has_installable_project = (
-        proj_info.get("has_setup_py")
-        or (p / "setup.cfg").exists()
-        or (proj_info["has_pyproject"] and _should_install_python_project(project_dir, callback))
+        bool(install_recipe.get("install_project"))
+        if install_recipe else (
+            proj_info.get("has_setup_py")
+            or (p / "setup.cfg").exists()
+            or (proj_info["has_pyproject"] and _should_install_python_project(project_dir, callback))
+        )
     )
     if has_installable_project:
         if callback:

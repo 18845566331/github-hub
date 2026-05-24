@@ -32,7 +32,8 @@ def _node_run_command(project_dir: str, script: str) -> list:
     return resolve_node_cli_command([manager, "run", script])
 
 
-def detect_launch_candidates(project_dir: str, config: dict = None) -> list:
+def detect_launch_candidates(project_dir: str, config: dict = None,
+                             recipe: dict = None) -> list:
     """Return ordered launch command candidates instead of only the first match."""
     p = Path(project_dir)
     if config is None:
@@ -48,6 +49,33 @@ def detect_launch_candidates(project_dir: str, config: dict = None) -> list:
             "description": f"自定义: {config['custom_command']}",
         })
         return candidates
+
+    launch_recipe = (recipe or {}).get("launch", {})
+    recipe_cmd = launch_recipe.get("cmd")
+    if recipe_cmd:
+        missing = [
+            name for name in launch_recipe.get("required_files", [])
+            if not (p / name).is_file()
+        ]
+        if not missing:
+            python_exe = config.get("python_exe") or sys.executable
+            if config.get("dep_mode", 1) == 1:
+                venv_dir = os.path.join(project_dir, ".venv")
+                if is_venv_ready(venv_dir):
+                    python_exe = get_venv_python(venv_dir)
+            replacements = {
+                "{python}": python_exe,
+                "{project_dir}": project_dir,
+            }
+            cmd = [replacements.get(part, part) for part in recipe_cmd]
+            cmd = resolve_node_cli_command(cmd)
+            return [{
+                "cmd": cmd,
+                "cwd": project_dir,
+                "env": None,
+                "description": launch_recipe.get("description", "Verified recipe"),
+                "verified_recipe": True,
+            }]
 
     if proj_info["has_package_json"]:
         pkg = _load_package_json(project_dir)
@@ -176,12 +204,13 @@ def detect_launch_candidates(project_dir: str, config: dict = None) -> list:
     return candidates
 
 
-def detect_launch_command(project_dir: str, config: dict = None) -> dict:
+def detect_launch_command(project_dir: str, config: dict = None,
+                          recipe: dict = None) -> dict:
     """
     自动检测最佳启动命令
     返回: {"cmd": [...], "cwd": str, "env": dict, "description": str}
     """
-    candidates = detect_launch_candidates(project_dir, config)
+    candidates = detect_launch_candidates(project_dir, config, recipe)
     if candidates:
         return candidates[0]
     proj_info = detect_project_type(project_dir)

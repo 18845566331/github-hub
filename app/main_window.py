@@ -59,6 +59,7 @@ from .mirror_manager import (
     transform_clone_url, build_pip_args, build_npm_args
 )
 from .config_manager import migrate_config_values
+from .project_recipes import get_verified_recipe, recipe_summary
 from .utils import (
     get_base_dir, get_projects_dir, get_shared_dir, get_pip_cache_dir,
     get_config_path, setup_logger, sanitize_path, escape_shell_arg,
@@ -633,6 +634,9 @@ class MainWindow(QMainWindow):
         """处理添加的项目信息"""
         if "id" not in project:
             project["id"] = str(uuid.uuid4())[:8]
+        recipe = get_verified_recipe(project)
+        if recipe:
+            project["verified_recipe"] = recipe_summary(recipe)
         projects = self.config.get("projects", [])
         existing_ids = {p.get("id") for p in projects}
         if project["id"] not in existing_ids:
@@ -716,7 +720,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", "项目目录未找到，请先克隆")
             return
         proj_info = detect_project_type(local_dir)
-        if not proj_info.get("dep_files"):
+        recipe = get_verified_recipe(project)
+        if not proj_info.get("dep_files") and not recipe:
             QMessageBox.information(self, "安装依赖", "未检测到可安装的依赖声明文件")
             return
 
@@ -743,18 +748,23 @@ class MainWindow(QMainWindow):
         self.detail.clear_console()
         self._set_busy(True, "正在安装依赖...")
         self._log(project, f"[INFO] 正在安装依赖 (模式 {'A' if dep_mode == 0 else 'B'})...")
+        if recipe:
+            self._log(
+                project,
+                f"[INFO] Using verified recipe: {recipe['title']} (verified {recipe['verified_on']})",
+            )
 
         if dep_mode == 0:
             def _do(progress_callback):
                 return install_to_shared_dir(
                     local_dir, shared_dir, python_exe, progress_callback,
-                    pip_mirror_args, npm_registry_args
+                    pip_mirror_args, npm_registry_args, recipe
                 )
         else:
             def _do(progress_callback):
                 return install_with_venv(
                     local_dir, venv_dir, cache_dir, python_exe, progress_callback,
-                    pip_mirror_args, npm_registry_args
+                    pip_mirror_args, npm_registry_args, recipe
                 )
 
         worker = ProgressWorker(_do)
@@ -832,7 +842,8 @@ class MainWindow(QMainWindow):
         if not self._check_dependencies_before_launch(project):
             return
 
-        launch_info = detect_launch_command(local_dir, self.config)
+        recipe = get_verified_recipe(project)
+        launch_info = detect_launch_command(local_dir, self.config, recipe)
         if not launch_info.get("cmd"):
             report = generate_project_diagnostic_report(local_dir, self.config)
             self.detail.switch_to_console()
@@ -862,7 +873,12 @@ class MainWindow(QMainWindow):
 
         self.detail.switch_to_console()
         self.detail.clear_console()
-        candidates = detect_launch_candidates(local_dir, self.config)
+        candidates = detect_launch_candidates(local_dir, self.config, recipe)
+        if recipe:
+            self._log(
+                project,
+                f"[INFO] Using verified launch recipe: {recipe['title']} (verified {recipe['verified_on']})",
+            )
         if len(candidates) > 1:
             desc = " | ".join(c.get("description", "") for c in candidates[:5])
             self._log(project, f"[INFO] 启动候选: {desc}")

@@ -16,9 +16,70 @@ from PySide6.QtWidgets import QApplication
 from app import dependency_manager as dm
 from app.dependency_panel import DependencyPanel
 from app.project_launcher import detect_launch_candidates
+from app.project_recipes import get_verified_recipe
 
 
 class DependencyWorkflowTests(unittest.TestCase):
+    def test_verified_recipe_selected_by_repository_url(self):
+        recipe = get_verified_recipe({
+            "clone_url": "https://github.com/shekhargulati/python-flask-docker-hello-world.git"
+        })
+        self.assertIsNotNone(recipe)
+        self.assertEqual(recipe["install"]["requirements"], ["requirements.txt"])
+
+    def test_verified_node_recipe_uses_tools_dev_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "package.json").write_text("{}", encoding="utf-8")
+            recipe = get_verified_recipe({"full_name": "nexu-io/open-design"})
+            with patch("app.project_launcher.resolve_node_cli_command", side_effect=lambda cmd: cmd):
+                candidate = detect_launch_candidates(str(project), {}, recipe)[0]
+            self.assertEqual(candidate["cmd"], ["pnpm", "run", "tools-dev"])
+            self.assertTrue(candidate["verified_recipe"])
+
+    def test_verified_recipe_controls_install_and_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "requirements.txt").write_text("flask\n", encoding="utf-8")
+            (project / "requirements-dev.txt").write_text("pytest\n", encoding="utf-8")
+            (project / "app.py").write_text("print('ready')\n", encoding="utf-8")
+            recipe = get_verified_recipe({
+                "owner": "shekhargulati",
+                "repo": "python-flask-docker-hello-world",
+            })
+            commands = []
+
+            def fake_pip(cmd, cwd=None, callback=None, auto_fix_ctx=None):
+                commands.append(cmd)
+                return True
+
+            def fake_run(cmd, **kwargs):
+                if cmd[1:3] == ["-m", "venv"]:
+                    python_path = project / ".venv" / (
+                        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+                    )
+                    python_path.parent.mkdir(parents=True, exist_ok=True)
+                    python_path.write_text("", encoding="utf-8")
+                return type("Result", (), {"returncode": 0})()
+
+            with patch.object(dm, "_ensure_uv_installed", return_value=False), \
+                 patch.object(dm, "_run_pip_with_progress", side_effect=fake_pip), \
+                 patch.object(dm.subprocess, "run", side_effect=fake_run):
+                ok = dm.install_with_venv(
+                    str(project), str(project / ".venv"),
+                    python_exe=sys.executable, recipe=recipe,
+                )
+
+            self.assertTrue(ok)
+            command_text = [" ".join(command) for command in commands]
+            self.assertTrue(any("requirements.txt" in command for command in command_text))
+            self.assertFalse(any("requirements-dev.txt" in command for command in command_text))
+            candidates = detect_launch_candidates(
+                str(project), {"dep_mode": 1, "python_exe": sys.executable}, recipe
+            )
+            self.assertEqual(candidates[0]["cmd"][-1], "app.py")
+            self.assertTrue(candidates[0]["verified_recipe"])
+
     def test_python_one_click_installs_all_manifests(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp) / "python_project"
