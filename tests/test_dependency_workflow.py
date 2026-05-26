@@ -350,7 +350,8 @@ class SupportDialogTests(unittest.TestCase):
              patch("app.support_dialog.get_resource_path", return_value=str(Path(tmp) / "payment_qr.png")):
             dialog = SupportDialog()
             labels = [label.text() for label in dialog.findChildren(QLabel)]
-            self.assertTrue(any("作者尚未配置收款码" in text for text in labels))
+            self.assertTrue(any("尚未配置支付宝收款码" in text for text in labels))
+            self.assertTrue(any("尚未配置微信支付收款码" in text for text in labels))
 
 
 if __name__ == "__main__":

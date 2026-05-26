@@ -74,11 +74,17 @@ def build(mode="onefile"):
         "main.py"
     ]
 
-    support_qr = os.path.join(PROJECT, "assets", "support", "payment_qr.png")
-    if os.path.isfile(support_qr):
-        cmd[cmd.index("main.py"):cmd.index("main.py")] = [
-            "--add-data", f"{support_qr};assets/support"
-        ]
+    support_assets = [
+        os.path.join(PROJECT, "assets", "support", "alipay_qr.jpg"),
+        os.path.join(PROJECT, "assets", "support", "wechat_pay_qr.png"),
+    ]
+    add_data = []
+    for support_asset in support_assets:
+        if os.path.isfile(support_asset):
+            add_data.extend(["--add-data", f"{support_asset};assets/support"])
+    if add_data:
+        entry_index = cmd.index("main.py")
+        cmd[entry_index:entry_index] = add_data
     
     if mode == "onefile":
         cmd.insert(cmd.index("--windowed") + 1, "--onefile")
