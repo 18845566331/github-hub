@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor, QFont, QTextCursor, QTextCharFormat
 from .workers import ProgressWorker
 from .diagnostics import run_full_diagnostics, check_project_requirements
 from .auto_fixer import auto_fix
+from .utils import get_default_python_executable
 
 
 class DiagnosticsDialog(QDialog):
@@ -311,13 +312,12 @@ class DiagnosticsDialog(QDialog):
         self.btn_check_proj.setEnabled(False)
         local_dir = self.project.get("local_dir", "")
 
-        import sys
         from .dependency_manager import is_venv_ready, get_venv_python
         venv_dir = os.path.join(local_dir, ".venv")
         if is_venv_ready(venv_dir):
             python_exe = get_venv_python(venv_dir)
         else:
-            python_exe = self.config.get("python_exe", "") or sys.executable
+            python_exe = self.config.get("python_exe", "") or get_default_python_executable()
 
         def _do(progress_callback):
             return check_project_requirements(local_dir, callback=progress_callback, python_exe=python_exe)
@@ -359,19 +359,23 @@ class DiagnosticsDialog(QDialog):
         if not missing:
             return
         self.btn_install_missing.setEnabled(False)
-        import sys
         local_dir = self.project.get("local_dir", "") if self.project else ""
         from .dependency_manager import is_venv_ready, get_venv_python, install_python_package
         venv_dir = os.path.join(local_dir, ".venv")
         if is_venv_ready(venv_dir):
             python_exe = get_venv_python(venv_dir)
         else:
-            python_exe = self.config.get("python_exe", sys.executable) or sys.executable
-        from .mirror_manager import build_pip_args
-        pip_args = build_pip_args(self.config.get("pip_mirror", ""))
-        manager_python = self.config.get("python_exe", sys.executable) or sys.executable
+            python_exe = self.config.get("python_exe", "") or get_default_python_executable()
+        from .mirror_manager import build_pip_args, choose_pip_mirror
+        manager_python = self.config.get("python_exe", "") or get_default_python_executable()
 
         def _do(progress_callback):
+            pip_source = choose_pip_mirror(
+                self.config.get("pip_mirror", ""),
+                self.config.get("auto_network_acceleration", True),
+                progress_callback,
+            )
+            pip_args = build_pip_args(pip_source)
             ok = True
             for package in missing:
                 ok = install_python_package(
@@ -483,16 +487,20 @@ class DiagnosticsDialog(QDialog):
 
     def _install_packages_list(self, packages: list):
         self.common_output.clear()
-        import sys
-        python_exe = self.config.get("python_exe", sys.executable) or sys.executable
-        from .mirror_manager import build_pip_args
-        pip_args = build_pip_args(self.config.get("pip_mirror", ""))
+        python_exe = self.config.get("python_exe", "") or get_default_python_executable()
+        from .mirror_manager import build_pip_args, choose_pip_mirror
 
         self._append(3, f"[INFO] 开始安装 {len(packages)} 个包...")
         self._append(3, f"[INFO] 包列表: {', '.join(packages)}")
 
         def _do(progress_callback):
             import subprocess
+            pip_source = choose_pip_mirror(
+                self.config.get("pip_mirror", ""),
+                self.config.get("auto_network_acceleration", True),
+                progress_callback,
+            )
+            pip_args = build_pip_args(pip_source)
             cmd = [python_exe, "-m", "pip", "install"] + packages + pip_args
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

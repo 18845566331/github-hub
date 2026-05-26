@@ -15,7 +15,9 @@ from .dependency_manager import (
     get_project_dependency_status, install_python_package,
     install_node_package,
 )
-from .mirror_manager import build_pip_args, build_npm_args
+from .mirror_manager import (
+    build_pip_args, build_npm_args, choose_pip_mirror, choose_npm_mirror,
+)
 from .workers import Worker
 
 
@@ -235,10 +237,17 @@ class DependencyPanel(QWidget):
         self.log_requested.emit(f"[INFO] 依赖操作: {spec}")
 
         def task():
+            auto_network = self._config.get("auto_network_acceleration", False)
             if dep.get("manager") == "npm":
-                npm_args = build_npm_args(self._config.get("npm_mirror", ""))
+                npm_source = choose_npm_mirror(
+                    self._config.get("npm_mirror", ""), auto_network, self.log_requested.emit
+                )
+                npm_args = build_npm_args(npm_source)
                 return install_node_package(local_dir, spec, self.log_requested.emit, npm_args)
-            pip_args = build_pip_args(self._config.get("pip_mirror", ""))
+            pip_source = choose_pip_mirror(
+                self._config.get("pip_mirror", ""), auto_network, self.log_requested.emit
+            )
+            pip_args = build_pip_args(pip_source)
             manager_python = self._config.get("python_exe") or None
             return install_python_package(
                 spec, env_python, manager_python, self.log_requested.emit,

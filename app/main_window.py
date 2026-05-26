@@ -33,6 +33,7 @@ from .project_detail import ProjectDetailPanel
 from .dependency_panel import DependencyPanel
 from .add_project_dialog import AddProjectDialog
 from .settings_dialog import SettingsDialog
+from .support_dialog import SupportDialog
 from .local_import_dialog import LocalImportDialog
 from .diagnostics_dialog import DiagnosticsDialog
 from .diagnostics import generate_project_diagnostic_report, check_project_dependencies
@@ -56,14 +57,15 @@ from .github_explorer import (
     translate_description
 )
 from .mirror_manager import (
-    transform_clone_url, build_pip_args, build_npm_args
+    build_pip_args, build_npm_args, choose_pip_mirror, choose_npm_mirror,
+    get_git_clone_candidates,
 )
 from .config_manager import migrate_config_values
 from .project_recipes import get_verified_recipe, recipe_summary
 from .utils import (
     get_base_dir, get_projects_dir, get_shared_dir, get_pip_cache_dir,
     get_config_path, setup_logger, sanitize_path, escape_shell_arg,
-    TranslationEngine
+    TranslationEngine, get_default_python_executable
 )
 
 # ══════════════════════════════════════════════════════
@@ -82,11 +84,12 @@ def _get_default_config() -> dict:
         "shared_dir": get_shared_dir(base),
         "pip_cache_dir": get_pip_cache_dir(base),
         "dep_mode": 1,
-        "python_exe": sys.executable,
+        "python_exe": get_default_python_executable(),
         "github_token": "",
         "pip_mirror": "阿里云",
         "github_mirror": "直连 GitHub (默认)",
         "npm_mirror": "官方 npm (默认)",
+        "auto_network_acceleration": True,
         "githug_repo": "",
         "githug_branch": "main",
         "version": "1.0.0",
@@ -109,6 +112,10 @@ def load_config() -> dict:
             defaults = _get_default_config()
             for k, v in defaults.items():
                 cfg.setdefault(k, v)
+            if getattr(sys, "frozen", False) and os.path.realpath(
+                cfg.get("python_exe", "")
+            ) == os.path.realpath(sys.executable):
+                cfg["python_exe"] = get_default_python_executable()
             if config_path != CONFIG_FILE:
                 logger.warning("主配置损坏或不可读，已从备份配置恢复")
             return migrate_config_values(cfg)
@@ -402,7 +409,8 @@ class MainWindow(QMainWindow):
 
         # 高级功能组
         scroll_layout.addWidget(_create_card("💎 高级功能", [
-            _mk("📤 导入/导出", self._on_export_import)
+            _mk("📤 导入/导出", self._on_export_import),
+            _mk("❤ 支持作者", self._on_support)
         ]))
 
         scroll_layout.addStretch()
@@ -470,6 +478,10 @@ class MainWindow(QMainWindow):
         act_about.triggered.connect(self._on_about)
         help_menu.addAction(act_about)
 
+        act_support = QAction("支持作者", self)
+        act_support.triggered.connect(self._on_support)
+        help_menu.addAction(act_support)
+
         help_menu.addSeparator()
         act_update = QAction("检查更新(&U)", self)
         act_update.triggered.connect(self._on_check_update)
@@ -496,15 +508,32 @@ class MainWindow(QMainWindow):
         local_dir = project.get("local_dir", "")
         if not local_dir or not os.path.isdir(local_dir):
             return "not_installed"
+        proj_info = detect_project_type(local_dir)
+        if proj_info.get("has_docker_compose"):
+            return "ready"
+        has_python_deps = any(
+            name in proj_info.get("dep_files", [])
+            for name in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg")
+        )
+        has_node_deps = proj_info.get("has_package_json", False)
+        if not has_python_deps and has_node_deps:
+            return "ready" if os.path.isdir(os.path.join(local_dir, "node_modules")) else "not_installed"
         dep_mode = self.config.get("dep_mode", 1)
-        if dep_mode == 0:
+        if has_python_deps and dep_mode == 0:
             shared_dir = self.config.get("shared_dir", "")
             if check_shared_dir_ready(shared_dir):
-                return "ready"
-        else:
+                python_ready = True
+            else:
+                python_ready = False
+        elif has_python_deps:
             venv_dir = self._get_venv_dir(project)
-            if is_venv_ready(venv_dir):
-                return "ready"
+            python_ready = is_venv_ready(venv_dir)
+        else:
+            python_ready = False
+        if python_ready:
+            if has_node_deps and not os.path.isdir(os.path.join(local_dir, "node_modules")):
+                return "not_installed"
+            return "ready"
         return "not_installed"
 
     def _get_venv_dir(self, project: dict) -> str:
@@ -539,7 +568,7 @@ class MainWindow(QMainWindow):
         venv_dir = self._get_venv_dir(project)
         if is_venv_ready(venv_dir):
             return get_venv_python(venv_dir)
-        return self.config.get("python_exe", sys.executable) or sys.executable
+        return self.config.get("python_exe") or get_default_python_executable()
 
     def _auto_check_dependencies(self, project: dict):
         local_dir = project.get("local_dir", "")
@@ -548,11 +577,15 @@ class MainWindow(QMainWindow):
         proj_info = detect_project_type(local_dir)
         if not proj_info.get("has_requirements"):
             return
+        python_exe = self._python_for_project(project)
+        if not python_exe:
+            self._log(project, "[WARN] 未检测到系统 Python，请在设置中指定 python.exe 后检查依赖")
+            return
 
         def _do(progress_callback):
             return check_project_dependencies(
                 local_dir,
-                python_exe=self._python_for_project(project),
+                python_exe=python_exe,
                 callback=progress_callback,
             )
 
@@ -574,7 +607,14 @@ class MainWindow(QMainWindow):
         proj_info = detect_project_type(local_dir)
         if not proj_info.get("has_requirements"):
             return True
-        result = check_project_dependencies(local_dir, python_exe=self._python_for_project(project))
+        python_exe = self._python_for_project(project)
+        if not python_exe:
+            QMessageBox.warning(
+                self, "启动项目",
+                "此 Python 项目需要系统 Python。\n请先安装 Python，或在设置中指定 python.exe。"
+            )
+            return False
+        result = check_project_dependencies(local_dir, python_exe=python_exe)
         missing = result.get("missing", [])
         if not missing:
             return True
@@ -601,14 +641,25 @@ class MainWindow(QMainWindow):
     def _install_single_dependency(self, project: dict, package: str):
         local_dir = project.get("local_dir", "")
         python_exe = self._python_for_project(project)
+        if not python_exe:
+            QMessageBox.warning(
+                self, "安装依赖",
+                "未检测到可用于项目的 Python 解释器。\n请先安装 Python，或在设置中指定 python.exe。"
+            )
+            return
         self.detail.switch_to_console()
         self._set_busy(True, f"正在修复依赖 {package}...")
         self._log(project, f"[INFO] 正在安装单个依赖: {package}")
 
         def _do(progress_callback):
             from .dependency_manager import _run_pip_with_progress
+            pip_source = choose_pip_mirror(
+                self.config.get("pip_mirror", ""),
+                self.config.get("auto_network_acceleration", True),
+                progress_callback,
+            )
             return _run_pip_with_progress(
-                [python_exe, "-m", "pip", "install", package],
+                [python_exe, "-m", "pip", "install", package] + build_pip_args(pip_source),
                 cwd=local_dir,
                 callback=progress_callback,
                 auto_fix_ctx={"python_exe": python_exe, "project_dir": local_dir},
@@ -656,15 +707,13 @@ class MainWindow(QMainWindow):
             self._log(project, f"[INFO] 已克隆: {target_dir}")
             status = self._compute_status(project)
             self.project_list.update_project_status(project["id"], status)
-            self.detail.load_project(project)
+            self.detail.load_project(project, self.config)
             if status != "ready":
                 QTimer.singleShot(500, lambda: self._ask_install(project))
             return
         if os.path.isdir(os.path.join(target_dir, ".git")):
             self._log(project, f"[WARN] 检测到不完整克隆，将重新拉取: {target_dir}")
 
-        gh_mirror = self.config.get("github_mirror", "")
-        actual_url = transform_clone_url(clone_url, gh_mirror)
         os.makedirs(os.path.dirname(target_dir), exist_ok=True)
         self.project_list.update_project_status(project["id"], "installing")
         self.detail.switch_to_console()
@@ -672,7 +721,18 @@ class MainWindow(QMainWindow):
         self._set_busy(True, "正在克隆...")
 
         def _do_clone(progress_callback):
-            return clone_repo(actual_url, target_dir, branch, progress_callback)
+            candidates = get_git_clone_candidates(
+                clone_url,
+                self.config.get("github_mirror", ""),
+                self.config.get("auto_network_acceleration", True),
+                progress_callback,
+            )
+            for index, (source_name, actual_url) in enumerate(candidates):
+                if index:
+                    progress_callback(f"[INFO] 正在切换克隆链路: {source_name}")
+                if clone_repo(actual_url, target_dir, branch, progress_callback):
+                    return True
+            return False
 
         worker = ProgressWorker(_do_clone)
         worker.signals.progress.connect(lambda l: self.sig_log.emit(project, l))
@@ -688,7 +748,7 @@ class MainWindow(QMainWindow):
             if success:
                 self._log(project, "[SUCCESS] 克隆完成！")
                 self.project_list.update_project_status(project["id"], "not_installed")
-                self.detail.load_project(project)
+                self.detail.load_project(project, self.config)
                 QTimer.singleShot(500, lambda: self._ask_install(project))
             else:
                 self._log(project, "[ERROR] 克隆失败！")
@@ -721,6 +781,15 @@ class MainWindow(QMainWindow):
             return
         proj_info = detect_project_type(local_dir)
         recipe = get_verified_recipe(project)
+        if proj_info.get("has_docker_compose") and not (
+            proj_info.get("has_requirements") or proj_info.get("has_pyproject")
+            or proj_info.get("has_setup_py") or proj_info.get("has_package_json")
+        ):
+            QMessageBox.information(
+                self, "Docker Compose 项目",
+                "此项目由 Docker Compose 构建部署，无需单独安装依赖。请点击“启动项目”开始部署。"
+            )
+            return
         if not proj_info.get("dep_files") and not recipe:
             QMessageBox.information(self, "安装依赖", "未检测到可安装的依赖声明文件")
             return
@@ -728,20 +797,27 @@ class MainWindow(QMainWindow):
         dep_mode = self.config.get("dep_mode", 1)
         shared_dir = self.config.get("shared_dir", "")
         cache_dir = self.config.get("pip_cache_dir", "")
-        python_exe = self.config.get("python_exe", sys.executable) or sys.executable
+        python_exe = self.config.get("python_exe") or get_default_python_executable()
         has_python_deps = any(
             name in proj_info.get("dep_files", [])
             for name in ("requirements.txt", "requirements-dev.txt", "pyproject.toml", "setup.py", "setup.cfg")
         )
-        if has_python_deps and not os.path.isfile(python_exe):
-            QMessageBox.warning(self, "安装依赖", f"配置的 Python 解释器不存在:\n{python_exe}")
+        if has_python_deps and (not python_exe or not os.path.isfile(python_exe)):
+            QMessageBox.warning(
+                self, "安装依赖",
+                "未检测到可用于项目的 Python 解释器。\n"
+                "请先安装 Python，或在设置中指定 python.exe。"
+            )
             return
         if dep_mode == 0 and has_python_deps and not shared_dir:
             QMessageBox.warning(self, "安装依赖", "共享依赖目录未配置，请先在设置中指定目录")
             return
         venv_dir = self._get_venv_dir(project)
-        pip_mirror_args = build_pip_args(self.config.get("pip_mirror", ""))
-        npm_registry_args = build_npm_args(self.config.get("npm_mirror", ""))
+        has_node_deps = any(
+            name in proj_info.get("dep_files", [])
+            for name in ("package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock")
+        )
+        auto_network = self.config.get("auto_network_acceleration", True)
 
         self.project_list.update_project_status(project["id"], "installing")
         self.detail.switch_to_console()
@@ -756,15 +832,27 @@ class MainWindow(QMainWindow):
 
         if dep_mode == 0:
             def _do(progress_callback):
+                pip_source = choose_pip_mirror(
+                    self.config.get("pip_mirror", ""), auto_network, progress_callback
+                ) if has_python_deps else self.config.get("pip_mirror", "")
+                npm_source = choose_npm_mirror(
+                    self.config.get("npm_mirror", ""), auto_network, progress_callback
+                ) if has_node_deps else self.config.get("npm_mirror", "")
                 return install_to_shared_dir(
                     local_dir, shared_dir, python_exe, progress_callback,
-                    pip_mirror_args, npm_registry_args, recipe
+                    build_pip_args(pip_source), build_npm_args(npm_source), recipe
                 )
         else:
             def _do(progress_callback):
+                pip_source = choose_pip_mirror(
+                    self.config.get("pip_mirror", ""), auto_network, progress_callback
+                ) if has_python_deps else self.config.get("pip_mirror", "")
+                npm_source = choose_npm_mirror(
+                    self.config.get("npm_mirror", ""), auto_network, progress_callback
+                ) if has_node_deps else self.config.get("npm_mirror", "")
                 return install_with_venv(
                     local_dir, venv_dir, cache_dir, python_exe, progress_callback,
-                    pip_mirror_args, npm_registry_args, recipe
+                    build_pip_args(pip_source), build_npm_args(npm_source), recipe
                 )
 
         worker = ProgressWorker(_do)
@@ -784,7 +872,7 @@ class MainWindow(QMainWindow):
             else:
                 self._log(project, "[ERROR] 安装失败！")
                 self.project_list.update_project_status(project["id"], "not_installed")
-            self.detail.load_project(project)
+            self.detail.load_project(project, self.config)
             self._save_projects()
         except Exception as e:
             logger.exception(f"安装完成回调异常: {e}")
@@ -891,12 +979,15 @@ class MainWindow(QMainWindow):
         started = proc.start(cmd, local_dir, env,
             output_callback=lambda l: self.sig_log.emit(project, l),
             url_detected_callback=lambda u: self.sig_url_detected.emit(project, u),
-            exit_callback=lambda code: self.sig_process_exited.emit(project, code))
+            exit_callback=lambda code: self.sig_process_exited.emit(project, code),
+            stop_cmd=launch_info.get("stop_cmd"))
         if not started:
             self.project_list.update_project_status(pid, "ready")
             self.detail.set_running_state(False)
             self._log(project, generate_project_diagnostic_report(local_dir, self.config))
             return
+        if launch_info.get("url_hint"):
+            self._on_url_detected(project, launch_info["url_hint"])
         self.detail.console.set_interactive(True)
         self.detail.console.command_sent.connect(
             lambda text: self._on_process_input(pid, text))
@@ -906,13 +997,16 @@ class MainWindow(QMainWindow):
         pid = project.get("id")
         stopped_by_user = pid in self._stopped_processes
         self._stopped_processes.discard(pid)
-        if pid in self._processes and not self._processes[pid].is_running:
+        detached_running = bool(pid in self._processes and self._processes[pid].is_running)
+        if pid in self._processes and not detached_running:
             del self._processes[pid]
-        status = self._compute_status(project)
+        status = "running" if detached_running else self._compute_status(project)
         self.project_list.update_project_status(pid, status)
         current = self._get_current_project()
         if current and current.get("id") == pid:
-            self.detail.set_running_state(False)
+            self.detail.set_running_state(detached_running)
+        if detached_running:
+            self._log(project, "[INFO] 启动器已退出，后台 Web 服务仍在运行，可点击“停止程序”关闭")
         if returncode and not stopped_by_user:
             self._log(project, f"[ERROR] 进程退出码: {returncode}")
             self._log(project, "[HINT] 如果错误是 No module named，请先点击“安装依赖”，或在诊断工具中安装缺失包。")
@@ -1179,6 +1273,10 @@ class MainWindow(QMainWindow):
         QMessageBox.about(self, "关于 GitHub Hub",
             f"<h3>GitHub Hub</h3><p>版本: v{ver}</p>"
             "<p>开源项目管理器 - 轻松管理您的 GitHub 项目</p>")
+
+    def _on_support(self):
+        """Show voluntary author support information."""
+        SupportDialog(self).exec()
 
     def _on_shortcuts(self):
         """快捷键对话框"""

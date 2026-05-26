@@ -12,14 +12,49 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 from app import dependency_manager as dm
+from app.main_window import MainWindow
+from app import utils
 from app.dependency_panel import DependencyPanel
 from app.project_launcher import detect_launch_candidates
 from app.project_recipes import get_verified_recipe
+from app.support_dialog import SupportDialog
 
 
 class DependencyWorkflowTests(unittest.TestCase):
+    def test_frozen_build_stores_mutable_data_in_local_appdata(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(utils.sys, "frozen", True, create=True), \
+             patch.dict(os.environ, {"LOCALAPPDATA": tmp}, clear=False):
+            self.assertEqual(utils.get_base_dir(), str(Path(tmp) / "GitHub Hub"))
+            self.assertTrue((Path(tmp) / "GitHub Hub").is_dir())
+
+    def test_frozen_build_does_not_use_bundled_exe_as_project_python(self):
+        with patch.object(utils.sys, "frozen", True, create=True), \
+             patch.object(utils.sys, "executable", r"C:\apps\GitHub Hub.exe"), \
+             patch.object(utils, "get_bundled_runtime_executable", return_value=""), \
+             patch.object(utils.shutil, "which", return_value=None):
+            self.assertEqual(utils.get_default_python_executable(), "")
+
+    def test_portable_runtimes_are_activated_and_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = Path(tmp) / "runtimes"
+            for relative in ("python/python.exe", "node/node.exe", "node/npm.cmd", "git/cmd/git.exe"):
+                path = runtime / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+            with patch.object(utils, "get_distribution_dir", return_value=tmp), \
+                 patch.object(utils.sys, "frozen", True, create=True), \
+                 patch.object(utils.sys, "executable", str(Path(tmp) / "GitHub Hub.exe")), \
+                 patch.dict(os.environ, {"PATH": "C:\\Windows"}, clear=False), \
+                 patch.object(utils.subprocess, "run") as run:
+                run.return_value.returncode = 0
+                resolved = utils.activate_bundled_runtimes()
+                self.assertEqual(resolved["git"], str(runtime / "git/cmd/git.exe"))
+                self.assertTrue(os.environ["PATH"].startswith(str(runtime / "git/cmd")))
+                self.assertEqual(utils.get_default_python_executable(), str(runtime / "python/python.exe"))
+
     def test_verified_recipe_selected_by_repository_url(self):
         recipe = get_verified_recipe({
             "clone_url": "https://github.com/shekhargulati/python-flask-docker-hello-world.git"
@@ -165,6 +200,21 @@ class DependencyWorkflowTests(unittest.TestCase):
             candidates = detect_launch_candidates(str(project))
             self.assertTrue(any(candidate["cmd"][-1] == "tools-dev" for candidate in candidates))
 
+    def test_compose_project_has_deploy_and_stop_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "compose.yaml").write_text(
+                "services:\n  web:\n    image: nginx:alpine\n    ports:\n      - '8099:80'\n",
+                encoding="utf-8",
+            )
+            candidates = detect_launch_candidates(str(project))
+            self.assertEqual(candidates[0]["cmd"], ["docker", "compose", "-f", "compose.yaml", "up", "--build"])
+            self.assertEqual(
+                candidates[0]["stop_cmd"],
+                ["docker", "compose", "-f", "compose.yaml", "down", "--remove-orphans"],
+            )
+            self.assertEqual(candidates[0]["url_hint"], "http://127.0.0.1:8099")
+
     def test_pnpm_workspace_single_package_action_targets_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -286,6 +336,21 @@ class DependencyPanelTests(unittest.TestCase):
             panel.install_all_requested.connect(lambda: requested.append(True))
             panel._run_action("install", {"name": "requests", "raw": "requests"})
             self.assertEqual(requested, [True])
+
+    def test_compose_project_is_ready_to_deploy_without_venv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "compose.yaml").write_text("services:\n  web:\n    image: nginx\n", encoding="utf-8")
+            window = MainWindow()
+            self.assertEqual(window._compute_status({"local_dir": tmp, "id": "compose"}), "ready")
+
+
+class SupportDialogTests(unittest.TestCase):
+    def test_support_dialog_handles_missing_payment_qr(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch("app.support_dialog.get_resource_path", return_value=str(Path(tmp) / "payment_qr.png")):
+            dialog = SupportDialog()
+            labels = [label.text() for label in dialog.findChildren(QLabel)]
+            self.assertTrue(any("作者尚未配置收款码" in text for text in labels))
 
 
 if __name__ == "__main__":

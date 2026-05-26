@@ -11,6 +11,7 @@
 - 为经过真实测试的仓库使用内置安装/启动配方，减少入口误判。
 - 浏览 GitHub 热门项目与分类列表。
 - 提供镜像设置、依赖状态管理与环境诊断工具。
+- 提供自愿支持作者入口，可在打包时配置作者收款码。
 
 ## 快速开始
 
@@ -20,6 +21,7 @@
 - Python 3.10+
 - Git
 - Node.js / pnpm（仅 Node 项目需要）
+- Docker Desktop（仅 Docker Compose 项目需要）
 
 ```bash
 python -m pip install -r requirements.txt
@@ -45,8 +47,23 @@ python -m unittest discover -s tests -p "test_dependency_workflow.py" -v
 
 ```bash
 python -m pip install pyinstaller
-python build_exe.py
+python build_exe.py onefile
+python build_portable_bundle.py
 ```
+
+生成的单文件程序位于 `dist/GitHub Hub.exe`。EXE 可在 Windows 10/11 64 位电脑上直接启动，
+配置、日志与下载项目会写入 `%LOCALAPPDATA%\GitHub Hub`。克隆项目仍需要 Git；
+运行 Node、Go、Rust 或 Docker 项目仍需要目标电脑安装相应运行时或 Docker Desktop。
+
+离线增强版位于 `dist/GitHub-Hub-Portable-Windows-x64.zip`，随包提供 Python、Node.js/npm
+与 MinGit。解压后运行其中的 `GitHub Hub.exe`，即可在没有系统 Git/Python/Node 安装的
+电脑上处理常见 Python 与 Node 项目。Go、Rust、GPU/CUDA 及 Docker Desktop 属于额外的
+项目或系统级运行条件，不包含在便携包中。
+
+## 支持作者
+
+程序包含可选的“支持作者”窗口。需要展示作者收款码时，将本人授权公开的图片命名为
+`assets/support/payment_qr.png` 后重新打包。打赏为完全自愿行为，不影响软件任何功能。
 
 ## 贡献
 

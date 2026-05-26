@@ -5,13 +5,13 @@ import os, sys
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFrame, QTabWidget,
-    QWidget, QGroupBox, QComboBox,
+    QWidget, QGroupBox, QComboBox, QCheckBox,
     QFileDialog, QMessageBox, QProgressBar
 )
 from PySide6.QtCore import Qt, QThreadPool
 from .mirror_manager import PIP_MIRRORS, GITHUB_MIRRORS, NPM_MIRRORS, get_best_pip_mirror
 from .workers import Worker
-from .utils import get_projects_dir, get_shared_dir, get_pip_cache_dir
+from .utils import get_projects_dir, get_shared_dir, get_pip_cache_dir, get_default_python_executable
 
 
 class SettingsDialog(QDialog):
@@ -90,7 +90,7 @@ class SettingsDialog(QDialog):
         grp_py = QGroupBox("Python 解释器")
         grp_py_layout = QVBoxLayout(grp_py)
         self.python_exe_edit = self._make_dir_row(grp_py_layout, "Python 可执行文件",
-            sys.executable, "留空则使用当前 Python", is_file=True)
+            get_default_python_executable(), "用于运行所管理 Python 项目的系统解释器", is_file=True)
         dep_layout.addWidget(grp_py)
         dep_layout.addStretch()
         tabs.addTab(tab_dep, "📦 依赖")
@@ -104,6 +104,9 @@ class SettingsDialog(QDialog):
         note_top = QLabel("🚀 为网络受限用户配置国内镜像，大幅提升下载速度")
         note_top.setStyleSheet("color: #7c4dff; font-size: 12px;")
         m_layout.addWidget(note_top)
+        self.auto_network_check = QCheckBox("下载前自动检测链路，并选择可用下载源（推荐）")
+        self.auto_network_check.setToolTip("克隆项目及安装依赖前检测 Git、PyPI 与 npm 可用性")
+        m_layout.addWidget(self.auto_network_check)
 
         # pip 镜像
         grp_pip_m = QGroupBox("pip 镜像源")
@@ -138,10 +141,8 @@ class SettingsDialog(QDialog):
         self.gh_mirror_combo.addItems(list(GITHUB_MIRRORS.keys()))
         ggm_layout.addWidget(self.gh_mirror_combo)
         gh_note = QLabel(
-            "• ghproxy.com — 代理访问 GitHub（国内推荐）\n"
-            "• FastGit — 域名替换镜像\n"
-            "• GitClone — 提前缓存的克隆加速\n"
-            "• 直连 — 有 VPN 时使用"
+            "• 克隆会优先使用 GitHub 直连；直连失败时才尝试已检测可用的代理\n"
+            "• 第三方代理会经过外部链路，请仅用于可信公开仓库"
         )
         gh_note.setStyleSheet("color: #7c85a6; font-size: 11px;")
         ggm_layout.addWidget(gh_note)
@@ -260,7 +261,7 @@ class SettingsDialog(QDialog):
         self.shared_dir_edit.setText(cfg.get("shared_dir", get_shared_dir()))
         self.cache_dir_edit.setText(cfg.get("pip_cache_dir", get_pip_cache_dir()))
         self.dep_mode_combo.setCurrentIndex(cfg.get("dep_mode", 1))
-        self.python_exe_edit.setText(cfg.get("python_exe", sys.executable))
+        self.python_exe_edit.setText(cfg.get("python_exe") or get_default_python_executable())
         self.token_edit.setText(cfg.get("github_token", ""))
 
         pip_mirror = cfg.get("pip_mirror", "官方 PyPI (默认)")
@@ -274,6 +275,7 @@ class SettingsDialog(QDialog):
         npm_mirror = cfg.get("npm_mirror", "官方 npm (默认)")
         idx = self.npm_mirror_combo.findText(npm_mirror)
         if idx >= 0: self.npm_mirror_combo.setCurrentIndex(idx)
+        self.auto_network_check.setChecked(cfg.get("auto_network_acceleration", True))
 
     def _save(self):
         self.config["projects_dir"]  = self.projects_dir_edit.text().strip()
@@ -285,6 +287,7 @@ class SettingsDialog(QDialog):
         self.config["pip_mirror"]    = self.pip_mirror_combo.currentText()
         self.config["github_mirror"] = self.gh_mirror_combo.currentText()
         self.config["npm_mirror"]    = self.npm_mirror_combo.currentText()
+        self.config["auto_network_acceleration"] = self.auto_network_check.isChecked()
         self.accept()
 
     def get_config(self) -> dict:

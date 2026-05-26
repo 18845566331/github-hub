@@ -3,6 +3,9 @@ utils.py — 通用工具函数
 集中管理魔法数字、路径处理、翻译等公共功能
 """
 import os
+import sys
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 import re
@@ -10,9 +13,100 @@ import re
 # ══════════════════════════════════════════════════════
 # 项目目录（动态计算）
 # ══════════════════════════════════════════════════════
-def get_base_dir() -> str:
-    """获取应用基础目录（动态计算，避免硬编码）"""
+def get_distribution_dir() -> str:
+    """Return the folder containing the executable and optional portable tools."""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def get_resource_path(relative_path: str) -> str:
+    """Return a path to an application asset in source and bundled modes."""
+    base_dir = getattr(sys, "_MEIPASS", get_distribution_dir())
+    return os.path.join(base_dir, relative_path)
+
+
+def get_bundled_runtime_executable(tool: str) -> str:
+    """Return a portable runtime executable shipped beside the application."""
+    runtimes = os.path.join(get_distribution_dir(), "runtimes")
+    candidates = {
+        "python": [os.path.join(runtimes, "python", "python.exe")],
+        "node": [os.path.join(runtimes, "node", "node.exe")],
+        "npm": [os.path.join(runtimes, "node", "npm.cmd")],
+        "git": [
+            os.path.join(runtimes, "git", "cmd", "git.exe"),
+            os.path.join(runtimes, "git", "bin", "git.exe"),
+        ],
+    }.get(tool, [])
+    return next((path for path in candidates if os.path.isfile(path)), "")
+
+
+def activate_bundled_runtimes() -> dict:
+    """Prefer portable Git, Python and Node tools distributed with the app."""
+    runtimes = os.path.join(get_distribution_dir(), "runtimes")
+    paths = [
+        os.path.join(runtimes, "git", "cmd"),
+        os.path.join(runtimes, "git", "bin"),
+        os.path.join(runtimes, "node"),
+        os.path.join(runtimes, "python"),
+        os.path.join(runtimes, "python", "Scripts"),
+    ]
+    existing = [path for path in paths if os.path.isdir(path)]
+    current = [part for part in os.environ.get("PATH", "").split(os.pathsep) if part]
+    os.environ["PATH"] = os.pathsep.join(existing + [part for part in current if part not in existing])
+
+    python_exe = get_bundled_runtime_executable("python")
+    if python_exe:
+        os.environ["GITHUB_HUB_PYTHON"] = python_exe
+    return {
+        "python": python_exe,
+        "node": get_bundled_runtime_executable("node"),
+        "npm": get_bundled_runtime_executable("npm"),
+        "git": get_bundled_runtime_executable("git"),
+    }
+
+
+def get_base_dir() -> str:
+    """Return the persistent application data directory."""
+    override = os.environ.get("GITHUB_HUB_DATA_DIR", "").strip()
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
+    if getattr(sys, "frozen", False):
+        local_appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        base_dir = os.path.join(local_appdata, "GitHub Hub")
+        os.makedirs(base_dir, exist_ok=True)
+        return base_dir
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def get_default_python_executable() -> str:
+    """Return an interpreter that can execute managed Python projects."""
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+
+    bundled_exe = os.path.realpath(sys.executable)
+    candidates = [
+        get_bundled_runtime_executable("python"),
+        os.environ.get("GITHUB_HUB_PYTHON", "").strip(),
+        shutil.which("python"),
+        shutil.which("python3"),
+    ]
+    for candidate in candidates:
+        if not candidate or os.path.realpath(candidate) == bundled_exe:
+            continue
+        try:
+            result = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return candidate
+    return ""
 
 def get_projects_dir(base_dir: str = None) -> str:
     """获取项目存储目录"""

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional, List
+from .utils import get_default_python_executable
 
 
 SHARED_PACKAGES_META = "installed_packages.json"
@@ -32,7 +33,7 @@ def detect_project_type(project_dir: str) -> dict:
         "type": "unknown", "dep_files": [], "entry_points": [],
         "has_requirements": False, "has_pyproject": False,
         "has_setup_py": False, "has_package_json": False,
-        "has_docker": False, "runtime": "python",
+        "has_docker": False, "has_docker_compose": False, "runtime": "python",
     }
     p = Path(project_dir)
     if (p / "requirements.txt").exists():
@@ -58,7 +59,12 @@ def detect_project_type(project_dir: str) -> dict:
     if (p / "Cargo.toml").exists():
         info["dep_files"].append("Cargo.toml")
         info["runtime"] = "rust"
-    if (p / "Dockerfile").exists() or (p / "docker-compose.yml").exists():
+    compose_names = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
+    if any((p / name).exists() for name in compose_names):
+        info["has_docker_compose"] = True
+        info["has_docker"] = True
+        info["dep_files"].append(next(name for name in compose_names if (p / name).exists()))
+    elif (p / "Dockerfile").exists():
         info["has_docker"] = True
 
     for ep in ["main.py", "app.py", "run.py", "server.py",
@@ -96,6 +102,11 @@ def detect_project_type(project_dir: str) -> dict:
         info["type"] = "go"
     elif info["runtime"] == "rust":
         info["type"] = "rust"
+    elif info["has_docker_compose"] and not (
+        info["has_requirements"] or info["has_pyproject"] or info["has_setup_py"] or info["has_package_json"]
+    ):
+        info["type"] = "docker"
+        info["runtime"] = "docker"
     return info
 
 
@@ -113,7 +124,7 @@ def read_requirements(req_file: str) -> list:
 
 
 def get_python_executable() -> str:
-    return sys.executable
+    return get_default_python_executable()
 
 
 def _run_pip_with_progress(cmd: list, cwd: str = None,

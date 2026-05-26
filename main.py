@@ -15,6 +15,9 @@ if _meipass and not os.path.exists(os.path.join(_meipass, 'app')):
     if os.path.exists(_internal):
         sys.path.insert(0, _internal)
 
+from app.utils import activate_bundled_runtimes
+activate_bundled_runtimes()
+
 from PySide6.QtWidgets import QApplication, QSplashScreen
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import (

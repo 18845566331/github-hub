@@ -1,0 +1,17 @@
+GitHub Hub Portable Runtime Notices
+===================================
+
+The portable distribution optionally includes the following third-party
+runtime components so common projects can be used without system-wide setup:
+
+- Python, distributed under the Python Software Foundation License.
+  https://www.python.org/
+- Node.js and npm, distributed under their accompanying licenses.
+  https://nodejs.org/
+- MinGit from Git for Windows, distributed under the GNU General Public
+  License and licenses of its included components.
+  https://gitforwindows.org/
+
+Copies of the runtime license files are provided in the licenses directory of
+the portable distribution. Projects downloaded or installed by the user are
+not part of GitHub Hub and retain their own license requirements.

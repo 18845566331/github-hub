@@ -15,6 +15,9 @@ from .dependency_manager import (
     detect_project_type, get_venv_python, is_venv_ready,
     detect_node_package_manager, resolve_node_cli_command
 )
+from .utils import get_default_python_executable
+
+COMPOSE_FILES = ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")
 
 
 def _load_package_json(project_dir: str) -> dict:
@@ -23,6 +26,25 @@ def _load_package_json(project_dir: str) -> dict:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _compose_web_url(project_dir: str) -> Optional[str]:
+    compose_file = next((Path(project_dir) / name for name in COMPOSE_FILES
+                         if (Path(project_dir) / name).is_file()), None)
+    if not compose_file:
+        return None
+    try:
+        import yaml
+        data = yaml.safe_load(compose_file.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    for service in (data.get("services") or {}).values():
+        for port in service.get("ports") or []:
+            published = port.get("published") if isinstance(port, dict) else str(port).split(":")[0]
+            published = str(published).strip('"\'') if published else ""
+            if published.isdigit():
+                return f"http://127.0.0.1:{published}"
+    return None
 
 
 def _node_run_command(project_dir: str, script: str) -> list:
@@ -58,7 +80,7 @@ def detect_launch_candidates(project_dir: str, config: dict = None,
             if not (p / name).is_file()
         ]
         if not missing:
-            python_exe = config.get("python_exe") or sys.executable
+            python_exe = config.get("python_exe") or get_default_python_executable()
             if config.get("dep_mode", 1) == 1:
                 venv_dir = os.path.join(project_dir, ".venv")
                 if is_venv_ready(venv_dir):
@@ -76,6 +98,17 @@ def detect_launch_candidates(project_dir: str, config: dict = None,
                 "description": launch_recipe.get("description", "Verified recipe"),
                 "verified_recipe": True,
             }]
+
+    if proj_info.get("has_docker_compose"):
+        compose_file = next(name for name in COMPOSE_FILES if (p / name).is_file())
+        return [{
+            "cmd": ["docker", "compose", "-f", compose_file, "up", "--build"],
+            "stop_cmd": ["docker", "compose", "-f", compose_file, "down", "--remove-orphans"],
+            "cwd": project_dir,
+            "env": None,
+            "description": f"Docker Compose: {compose_file}",
+            "url_hint": _compose_web_url(project_dir),
+        }]
 
     if proj_info["has_package_json"]:
         pkg = _load_package_json(project_dir)
@@ -105,7 +138,7 @@ def detect_launch_candidates(project_dir: str, config: dict = None,
     if (p / "Cargo.toml").exists():
         return [{"cmd": ["cargo", "run"], "cwd": project_dir, "env": None, "description": "cargo run"}]
 
-    python_exe = config.get("python_exe") or sys.executable
+    python_exe = config.get("python_exe") or get_default_python_executable()
     dep_mode = config.get("dep_mode", 1)
     if dep_mode == 1:
         venv_dir = os.path.join(project_dir, ".venv")
@@ -216,6 +249,8 @@ def detect_launch_command(project_dir: str, config: dict = None,
     proj_info = detect_project_type(project_dir)
     if proj_info.get("has_package_json"):
         description = "项目根目录未提供可启动的 start/dev/serve/preview 脚本，请选择可运行的应用目录或手动配置启动命令"
+    elif proj_info.get("has_docker"):
+        description = "检测到 Dockerfile，但没有可自动部署的 Compose 配置；请提供 compose.yaml 或配置自定义启动命令和端口映射"
     else:
         description = "项目未提供可自动启动的程序入口；文档、资源列表或库项目通常不能直接点击启动"
     return {
@@ -271,15 +306,25 @@ class ProjectProcess:
         self._project_dir = ""
         self._detected_urls: set[str] = set()
         self._reported_pids: set[int] = set()
+        self._stop_cmd: Optional[list] = None
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.poll() is None
+        if self._process is not None and self._process.poll() is None:
+            return True
+        if self._reported_pids:
+            try:
+                import psutil
+                return any(psutil.pid_exists(pid) for pid in self._reported_pids)
+            except ImportError:
+                pass
+        return False
 
     def start(self, cmd: list, cwd: str, env: dict = None,
               output_callback: Callable = None,
               url_detected_callback: Callable = None,
-              exit_callback: Callable = None) -> bool:
+              exit_callback: Callable = None,
+              stop_cmd: list = None) -> bool:
         """启动项目，output_callback 会在新线程中被调用"""
         if self.is_running:
             return False
@@ -287,6 +332,7 @@ class ProjectProcess:
             self._project_dir = os.path.realpath(cwd)
             self._detected_urls.clear()
             self._reported_pids.clear()
+            self._stop_cmd = stop_cmd
             process = subprocess.Popen(
                 cmd,
                 cwd=cwd,
@@ -384,6 +430,16 @@ class ProjectProcess:
             except Exception:
                 pass
         self._stop_detached_project_services()
+        if self._stop_cmd and self._project_dir:
+            try:
+                subprocess.run(
+                    self._stop_cmd, cwd=self._project_dir, capture_output=True,
+                    text=True, timeout=60,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                )
+            except Exception:
+                pass
+        self._stop_cmd = None
         self._process = None
 
     def send_input(self, text: str):
